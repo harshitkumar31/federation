@@ -42,7 +42,12 @@ import {
   CompositionMetadata,
 } from './loadServicesFromStorage';
 
-import { serializeQueryPlan, QueryPlan, OperationContext, WasmPointer } from './QueryPlan';
+import {
+  serializeQueryPlan,
+  QueryPlan,
+  OperationContext,
+  WasmPointer,
+} from './QueryPlan';
 import { GraphQLDataSource } from './datasources/types';
 import { RemoteGraphQLDataSource } from './datasources/RemoteGraphQLDataSource';
 import { getVariableValues } from 'graphql/execution/values';
@@ -112,6 +117,17 @@ export const HEALTH_CHECK_QUERY =
 export const SERVICE_DEFINITION_QUERY =
   'query __ApolloGetServiceDefinition__ { _service { sdl } }';
 
+type GatewayState =
+  | { phase: 'initialized' }
+  | { phase: 'loaded' }
+  | { phase: 'stopping'; stoppingDonePromise: Promise<void> }
+  | { phase: 'stopped' }
+  | {
+      phase: 'waiting to poll';
+      pollWaitTimer: NodeJS.Timer;
+      doneWaiting: () => void;
+    }
+  | { phase: 'polling'; pollingDonePromise: Promise<void> };
 export class ApolloGateway implements GraphQLService {
   public schema?: GraphQLSchema;
   protected serviceMap: DataSourceMap = Object.create(null);
@@ -119,7 +135,6 @@ export class ApolloGateway implements GraphQLService {
   private logger: Logger;
   protected queryPlanStore: InMemoryLRUCache<QueryPlan>;
   private apolloConfig?: ApolloConfig;
-  private pollingTimer?: NodeJS.Timer;
   private onSchemaChangeListeners = new Set<SchemaChangeCallback>();
   private serviceDefinitions: ServiceDefinition[] = [];
   private compositionMetadata?: CompositionMetadata;
@@ -128,6 +143,8 @@ export class ApolloGateway implements GraphQLService {
   private queryPlannerPointer?: WasmPointer;
   private parsedCsdl?: DocumentNode;
   private fetcher: typeof fetch;
+
+  private state: GatewayState;
 
   // Observe query plan, service info, and operation info prior to execution.
   // The information made available here will give insight into the resulting
@@ -179,6 +196,8 @@ export class ApolloGateway implements GraphQLService {
     if (isDynamicConfig(this.config)) {
       this.issueDynamicWarningsIfApplicable();
     }
+
+    this.state = { phase: 'initialized' };
   }
 
   private initLogger() {
@@ -243,6 +262,11 @@ export class ApolloGateway implements GraphQLService {
     apollo?: ApolloConfig;
     engine?: GraphQLServiceEngineConfig;
   }) {
+    if (this.state.phase !== 'initialized') {
+      throw Error(
+        'ApolloGateway.load called in surprising state ${this.state}',
+      );
+    }
     if (options?.apollo) {
       this.apolloConfig = options.apollo;
     } else if (options?.engine) {
@@ -272,7 +296,7 @@ export class ApolloGateway implements GraphQLService {
 
     return {
       schema: this.schema!,
-      executor: this.executor
+      executor: this.executor,
     };
   }
 
@@ -288,22 +312,21 @@ export class ApolloGateway implements GraphQLService {
     this.schema = schema;
     this.parsedCsdl = parse(composedSdl);
     this.queryPlannerPointer = getQueryPlanner(composedSdl);
+    this.state = { phase: 'loaded' };
   }
 
   // Asynchronously load a dynamically configured schema. `this.updateComposition`
   // is responsible for updating the class instance's schema and query planner.
   private async loadDynamic() {
     await this.updateComposition();
+    this.state = { phase: 'loaded' };
     if (this.shouldBeginPolling()) {
       this.pollServices();
     }
   }
 
   private shouldBeginPolling() {
-    return (
-      (isManagedConfig(this.config) || this.experimental_pollInterval) &&
-      !this.pollingTimer
-    );
+    return isManagedConfig(this.config) || this.experimental_pollInterval;
   }
 
   protected async updateComposition(): Promise<void> {
@@ -473,7 +496,7 @@ export class ApolloGateway implements GraphQLService {
       }
       throw Error(
         "A valid schema couldn't be composed. The following composition errors were found:\n" +
-          errors.map(e => '\t' + e.message).join('\n'),
+          errors.map((e) => '\t' + e.message).join('\n'),
       );
     } else {
       const { composedSdl } = compositionResult;
@@ -545,20 +568,62 @@ export class ApolloGateway implements GraphQLService {
     };
   }
 
+  // This function waits an appropriate amount, updates composition, and calls itself
+  // again. Note that it is an async function whose Promise is not actually awaited;
+  // it should never throw itself other than due to a bug in its state machine.
   private async pollServices() {
-    if (this.pollingTimer) clearTimeout(this.pollingTimer);
+    switch (this.state.phase) {
+      case 'stopping':
+      case 'stopped':
+        return;
+      case 'initialized':
+        throw Error('pollServices should not be called before load!');
+      case 'polling':
+        throw Error(
+          'pollServices should not be called while in the middle of polling!',
+        );
+      case 'waiting to poll':
+        throw Error(
+          'pollServices should not be called while already waiting to poll!',
+        );
+      case 'loaded':
+        // This is the normal case.
+        break;
+      default:
+        throw new UnreachableCaseError(this.state);
+    }
 
-    // Sleep for the specified pollInterval before kicking off another round of polling
-    await new Promise<void>((res) => {
-      this.pollingTimer = setTimeout(
-        () => res(),
-        this.experimental_pollInterval || 10000,
-      );
-      // Prevent the Node.js event loop from remaining active (and preventing,
-      // e.g. process shutdown) by calling `unref` on the `Timeout`.  For more
-      // information, see https://nodejs.org/api/timers.html#timers_timeout_unref.
-      this.pollingTimer?.unref();
+    // Transition into 'waiting to poll' and set a timer. The timer resolves the
+    // Promise we're awaiting here; note that calling stop() also can resolve
+    // that Promise.
+    await new Promise<void>((doneWaiting) => {
+      this.state = {
+        phase: 'waiting to poll',
+        doneWaiting,
+        pollWaitTimer: setTimeout(() => {
+          // Note that we might be in 'stopped', in which case we just do
+          // nothing.
+          if (this.state.phase == 'waiting to poll') {
+            this.state.doneWaiting();
+          }
+        }, this.experimental_pollInterval || 10000),
+      };
     });
+
+    // If we've been stopped, then we're done. The cast here is because TS
+    // doesn't understand that this.state can change during the await
+    // (https://github.com/microsoft/TypeScript/issues/9998).
+    if ((this.state as GatewayState).phase !== 'waiting to poll') {
+      return;
+    }
+
+    let pollingDone: () => void;
+    this.state = {
+      phase: 'polling',
+      pollingDonePromise: new Promise<void>((res) => {
+        pollingDone = res;
+      }),
+    };
 
     try {
       await this.updateComposition();
@@ -566,7 +631,15 @@ export class ApolloGateway implements GraphQLService {
       this.logger.error((err && err.message) || err);
     }
 
-    this.pollServices();
+    if (this.state.phase === 'polling') {
+      // If we weren't stopped, we should transition back to the initial 'loading' state and trigger
+      // another call to itself. (Do that in a setImmediate to avoid unbounded stack sizes.)
+      this.state = { phase: 'loaded' };
+      setImmediate(() => this.pollServices());
+    }
+
+    // Whether we were stopped or not, let any concurrent stop() call finish.
+    pollingDone!();
   }
 
   private createAndCacheDataSource(
@@ -632,9 +705,9 @@ export class ApolloGateway implements GraphQLService {
     if (!canUseManagedConfig) {
       throw new Error(
         'When a manual configuration is not provided, gateway requires an Apollo ' +
-        'configuration. See https://www.apollographql.com/docs/apollo-server/federation/managed-federation/ ' +
-        'for more information. Manual configuration options include: ' +
-        '`serviceList`, `csdl`, and `experimental_updateServiceDefinitions`.',
+          'configuration. See https://www.apollographql.com/docs/apollo-server/federation/managed-federation/ ' +
+          'for more information. Manual configuration options include: ' +
+          '`serviceList`, `csdl`, and `experimental_updateServiceDefinitions`.',
       );
     }
 
@@ -814,9 +887,58 @@ export class ApolloGateway implements GraphQLService {
   }
 
   public async stop() {
-    if (this.pollingTimer) {
-      clearTimeout(this.pollingTimer);
-      this.pollingTimer = undefined;
+    switch (this.state.phase) {
+      case 'initialized':
+        throw Error(
+          'ApolloGateway.stop does not need to be called before ApolloGateway.load',
+        );
+      case 'stopped':
+        // Calls to stop() are idempotent.
+        return;
+      case 'stopping':
+        await this.state.stoppingDonePromise;
+        // The cast here is because TS doesn't understand that this.state can
+        // change during the await
+        // (https://github.com/microsoft/TypeScript/issues/9998).
+        if ((this.state as GatewayState).phase !== 'stopped') {
+          throw Error(
+            `Expected to be stopped when done stopping, but instead ${this.state.phase}`,
+          );
+        }
+        return;
+      case 'loaded':
+        this.state = { phase: 'stopped' }; // nothing to do (we're not polling)
+        return;
+      case 'waiting to poll': {
+        // If we're waiting to poll, we can synchronously transition to fully stopped.
+        // We will terminate the current pollServices call and it will succeed quickly.
+        const doneWaiting = this.state.doneWaiting;
+        clearTimeout(this.state.pollWaitTimer);
+        this.state = { phase: 'stopped' };
+        doneWaiting();
+        return;
+      }
+      case 'polling': {
+        // We're in the middle of running updateComposition. We need to go into 'stopping'
+        // mode and let this run complete. First we set things up so that any concurrent
+        // calls to stop() will wait until we let them finish. (Those concurrent calls shouldn't
+        // just wait on pollingDonePromise themselves because we want to make sure we fully
+        // transition to state='stopped' before the other call returns.)
+        const pollingDonePromise = this.state.pollingDonePromise;
+        let stoppingDone: () => void;
+        this.state = {
+          phase: 'stopping',
+          stoppingDonePromise: new Promise<void>((res) => {
+            stoppingDone = res;
+          }),
+        };
+        await pollingDonePromise;
+        this.state = { phase: 'stopped' };
+        stoppingDone!();
+        return;
+      }
+      default:
+        throw new UnreachableCaseError(this.state);
     }
   }
 }
@@ -829,22 +951,29 @@ function approximateObjectSize<T>(obj: T): number {
 // planning would be lost. Instead we set a resolver for each field
 // in order to counteract GraphQLExtensions preventing a defaultFieldResolver
 // from doing the same job
-function wrapSchemaWithAliasResolver(
-  schema: GraphQLSchema,
-): GraphQLSchema {
+function wrapSchemaWithAliasResolver(schema: GraphQLSchema): GraphQLSchema {
   const typeMap = schema.getTypeMap();
-  Object.keys(typeMap).forEach(typeName => {
+  Object.keys(typeMap).forEach((typeName) => {
     const type = typeMap[typeName];
 
     if (isObjectType(type) && !isIntrospectionType(type)) {
       const fields = type.getFields();
-      Object.keys(fields).forEach(fieldName => {
+      Object.keys(fields).forEach((fieldName) => {
         const field = fields[fieldName];
         field.resolve = defaultFieldResolverWithAliasSupport;
       });
     }
   });
   return schema;
+}
+
+// Throw this in places that should be unreachable (because all other cases have
+// been handled, reducing the type of the argument to `never`). TypeScript will
+// complain if in fact there is a valid type for the argument.
+class UnreachableCaseError extends Error {
+  constructor(val: never) {
+    super(`Unreachable case: ${val}`);
+  }
 }
 
 export {
