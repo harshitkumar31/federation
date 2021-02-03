@@ -345,6 +345,7 @@ function printFederationFieldDirectives(
     serviceName,
     requires = [],
     provides = [],
+    // postprocess
   }: FederationField = field.extensions.federation;
 
   let printed = '';
@@ -364,6 +365,11 @@ function printFederationFieldDirectives(
   if (provides.length > 0) {
     printed += ` @provides(fields: "${printFieldSet(provides)}")`;
   }
+
+  // if (postprocess) {
+  //   // const args = postprocess.arguments.map(arg => `${arg.name.value}:"${arg.value.value}"`).join(',');
+  //   printed += `@postprocess`;
+  // }
 
   return printed;
 }

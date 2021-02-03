@@ -547,6 +547,21 @@ export function addFederationMetadataToSchemaNodes({
             federation: fieldFederationMetadata,
           };
         }
+
+        // @postprocess
+        // const [postprocessDirective] = findDirectivesOnNode(
+        //   field.astNode,
+        //   'postprocess',
+        // );
+        // if(postprocessDirective){
+        //   field.extensions = {
+        //     ...field.extensions,
+        //     federation: {
+        //       ...getFederationMetadata(field), postprocess: {
+        //         arguments: postprocessDirective.arguments
+        //     }, },
+        //   };
+        // }
       }
     }
   }

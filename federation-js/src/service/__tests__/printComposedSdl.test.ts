@@ -52,6 +52,8 @@ describe('printComposedSdl', () => {
 
       directive @requires(fields: String!) on FIELD_DEFINITION
 
+      directive @postprocess(service: String!, predicate: String!) on FIELD_DEFINITION
+
       directive @stream on FIELD
 
       directive @transform(from: String!) on FIELD
@@ -203,6 +205,7 @@ describe('printComposedSdl', () => {
         book(isbn: String!): Book @resolve(graph: \\"books\\")
         books: [Book] @resolve(graph: \\"books\\")
         library(id: ID!): Library @resolve(graph: \\"books\\")
+        ppQ(id: ID!): Library @resolve(graph: \\"books\\")
         body: Body! @resolve(graph: \\"documents\\")
         product(upc: String!): Product @resolve(graph: \\"product\\")
         vehicle(id: String!): Vehicle @resolve(graph: \\"product\\")

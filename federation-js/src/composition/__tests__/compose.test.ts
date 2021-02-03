@@ -1346,6 +1346,44 @@ describe('composeServices', () => {
         `);
       });
     });
+
+    describe(`@postprocess directive`, () => {
+      it('allows extension of the Query type with no base type definition', () => {
+        const serviceA = {
+          typeDefs: gql`
+            extend type Query {
+              products: [ID!] @postprocess(service: "xyz", predicate: "abc")
+            }
+          `,
+          name: 'serviceA',
+        };
+
+        const serviceB = {
+          typeDefs: gql`
+            extend type Query {
+              people: [ID!]
+            }
+          `,
+          name: 'serviceB',
+        };
+
+        const compositionResult = composeServices([serviceA, serviceB]);
+        assertCompositionSuccess(compositionResult);
+        const { schema } = compositionResult;
+        expect(schema).toBeDefined();
+
+        expect(schema.getQueryType()).toMatchInlineSnapshot(`
+                          type Query {
+                            products: [ID!]
+                            people: [ID!]
+                          }
+                    `);
+
+        const query = schema.getQueryType();
+
+        expect(getFederationMetadata(query).serviceName).toBeUndefined();
+      });
+    });
   });
   describe('executable directives', () => {
     it('keeps executable directives in the schema', () => {

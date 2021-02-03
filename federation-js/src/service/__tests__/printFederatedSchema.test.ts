@@ -140,6 +140,7 @@ describe('printFederatedSchema', () => {
         book(isbn: String!): Book
         books: [Book]
         library(id: ID!): Library
+        ppQ(id: ID!): Library @postprocess(service: \\"xyz\\", predicate: \\"abc\\")
         body: Body!
         product(upc: String!): Product
         vehicle(id: String!): Vehicle

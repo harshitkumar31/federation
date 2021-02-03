@@ -38,6 +38,11 @@ export interface FederationField {
   requires?: ReadonlyArray<SelectionNode>;
   provides?: ReadonlyArray<SelectionNode>;
   belongsToValueType?: boolean;
+  postprocess?: PostProcess;
+}
+
+interface PostProcess {
+  arguments: ReadonlyArray<any>;
 }
 
 export interface FederationDirective {

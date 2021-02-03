@@ -104,7 +104,7 @@ export const resolvers: GraphQLResolverMap<any> = {
 
     me() {
       return { id: '1' };
-    },
+    }
   },
   User: {
     __resolveObject(object) {

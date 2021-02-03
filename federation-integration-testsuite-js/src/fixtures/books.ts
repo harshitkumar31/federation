@@ -11,6 +11,7 @@ export const typeDefs = gql`
     book(isbn: String!): Book
     books: [Book]
     library(id: ID!): Library
+    ppQ(id: ID!): Library @postprocess(service: "xyz", predicate: "abc")
   }
 
   type Library @key(fields: "id") {
@@ -120,6 +121,9 @@ export const resolvers: GraphQLResolverMap<any> = {
     library(_, { id }) {
       return libraries.find(library => library.id === id);
     },
+    ppQ(_, { id }) {
+      return libraries.find(library => library.id === id);
+    }
   },
   MetadataOrError: {
     __resolveType(object) {

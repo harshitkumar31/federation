@@ -784,6 +784,36 @@ describe('composition of schemas with directives', () => {
   });
 });
 
+it(`doesn't strip the special case @postprocess directive`, () => {
+  const serviceA = {
+    typeDefs: gql`
+      type Query {
+        product: Product @postprocess(service: "xyz", predicate: "abc")
+      }
+      type Product @key(fields: "color { id value }") {
+        sku: String!
+        upc: String!
+        color: Color
+      }
+      type Color {
+        id: String!
+        value: String!
+      }
+    `,
+    name: 'serviceA',
+  };
+
+  const { schema, errors } = composeAndValidate([serviceA]);
+  expect(errors).toBeUndefined();
+
+  const queryType = schema.getType('Query') as GraphQLObjectType;
+  const field = queryType.getFields()['product'];
+  const detach = field.astNode.directives.find(
+    (directive) => directive.name.value === 'postprocess',
+  );
+  expect(detach).toMatchInlineSnapshot(`@postprocess(service: "xyz", predicate: "abc")`);
+});
+
 it('composition of full-SDL schemas without any errors', () => {
   const serviceA = {
     typeDefs: gql`

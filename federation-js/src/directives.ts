@@ -51,6 +51,19 @@ export const RequiresDirective = new GraphQLDirective({
   },
 });
 
+export const PostProcessDirective = new GraphQLDirective({
+  name: 'postprocess',
+  locations: [DirectiveLocation.FIELD_DEFINITION],
+  args: {
+    service: {
+      type: GraphQLNonNull(GraphQLString)
+    },
+    predicate: {
+      type: GraphQLNonNull(GraphQLString)
+    }
+  }
+});
+
 export const ProvidesDirective = new GraphQLDirective({
   name: 'provides',
   locations: [DirectiveLocation.FIELD_DEFINITION],
@@ -67,6 +80,7 @@ export const federationDirectives = [
   ExternalDirective,
   RequiresDirective,
   ProvidesDirective,
+  PostProcessDirective
 ];
 
 export default federationDirectives;

@@ -84,6 +84,19 @@ export const RequiresDirective = new GraphQLDirective({
   },
 });
 
+export const PostProcessDirective = new GraphQLDirective({
+  name: 'postprocess',
+  locations: [DirectiveLocation.FIELD_DEFINITION],
+  args: {
+    service: {
+      type: GraphQLNonNull(GraphQLString)
+    },
+    predicate: {
+      type: GraphQLNonNull(GraphQLString)
+    }
+  }
+});
+
 export const csdlDirectives = [
   ComposedGraphDirective,
   GraphDirective,
@@ -92,6 +105,7 @@ export const csdlDirectives = [
   ResolveDirective,
   ProvidesDirective,
   RequiresDirective,
+  PostProcessDirective
 ];
 
 export default csdlDirectives;
